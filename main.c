@@ -29,6 +29,7 @@ int main (int argc, char *argv[])
 	aadetect();
 
     return 0;
+
 }
 
 bool aadetect(void)
