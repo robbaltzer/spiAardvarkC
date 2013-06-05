@@ -1,2 +1,8 @@
 
 *.prefs
+
+*.o
+
+_output/aardvark.so
+
+_output/main

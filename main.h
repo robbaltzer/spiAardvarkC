@@ -12,6 +12,12 @@
 | ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 | POSSIBILITY OF SUCH DAMAGE.
  ========================================================================*/
+#ifndef __main_h
+#define __main_h
+
 #include <stdbool.h>
 
-bool aadetect(void);
+u16 aadetect(void);
+void readReadSPI(u16 port);
+
+#endif
