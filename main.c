@@ -30,18 +30,21 @@
 
 #define SLAVE_RESP_SIZE     26
 
-static u16 m_port;
+static s16 m_port;
+
+static void dump (Aardvark handle, int timeout_ms);
 
 int main (int argc, char *argv[])
 {
 	m_port = aadetect();
-	readReadSPI(m_port);
+	if (m_port != -1) {
+		readReadSPI(m_port);
+	}
 
     return 0;
-
 }
 
-u16 aadetect(void)
+s16 aadetect(void)
 {
     u16 ports[16];
     u32 unique_ids[16];
@@ -78,15 +81,24 @@ u16 aadetect(void)
     }
 }
 
+static u08 data_in1[500];
+static u08 data_out1[500];
+
 void readReadSPI(u16 port)
 {
     Aardvark handle;
 
     int mode       = 1;
-//    int timeout_ms = 500;
+    int timeout_ms = 500;
 
     u08 slave_resp[SLAVE_RESP_SIZE];
     int i;
+    data_out1[0] = 0x01;
+    data_out1[1] = 0x02;
+    data_out1[2] = 0x03;
+    data_out1[3] = 0x04;
+    data_out1[4] = 0xDE;
+    data_out1[5] = 0xAD;
 
 //    if (argc < 4) {
 //        printf("usage: aaspi_slave PORT MODE TIMEOUT_MS\n");
@@ -130,12 +142,69 @@ void readReadSPI(u16 port)
     // Enable the slave
     aa_spi_slave_enable(handle);
 
+
+    // Write the data to the bus
+    aa_spi_write(handle, 500, data_out1, 500, data_in1);
+
     // Watch the SPI port
-//    dump(handle, timeout_ms);
+    dump(handle, timeout_ms);
 
     // Disable the slave and close the device
     aa_spi_slave_disable(handle);
     aa_close(handle);
 
 //    return 0;
+}
+
+static u08 data_in[BUFFER_SIZE];
+
+static void dump (Aardvark handle, int timeout_ms)
+{
+    int trans_num = 0;
+    int result;
+
+    printf("Watching slave SPI data...\n");
+
+    // Wait for data on bus
+    result = aa_async_poll(handle, timeout_ms);
+    if (result != AA_ASYNC_SPI) {
+        printf("No data available.\n");
+        return;
+    }
+
+    printf("\n");
+
+    // Loop until aa_spi_slave_read times out
+    for (;;) {
+        int num_read;
+
+        // Read the SPI message.
+        // This function has an internal timeout (see datasheet).
+        // To use a variable timeout the function aa_async_poll could
+        // be used for subsequent messages.
+        num_read = aa_spi_slave_read(handle, BUFFER_SIZE, data_in);
+
+        if (num_read < 0 && num_read != AA_SPI_SLAVE_TIMEOUT) {
+            printf("error: %s\n", aa_status_string(num_read));
+            return;
+        }
+        else if (num_read == 0 || num_read == AA_SPI_SLAVE_TIMEOUT) {
+            printf("No more data available from SPI master.\n");
+            return;
+        }
+        else {
+            int i;
+            // Dump the data to the screen
+            printf("*** Transaction #%02d\n", trans_num);
+            printf("Data read from device:");
+            for (i = 0; i < num_read; ++i) {
+                if ((i&0x0f) == 0)      printf("\n%04x:  ", i);
+                printf("%02x ", data_in[i] & 0xff);
+                if (((i+1)&0x07) == 0)  printf(" ");
+            }
+            printf("\n\n");
+
+            ++trans_num;
+        }
+    }
 }

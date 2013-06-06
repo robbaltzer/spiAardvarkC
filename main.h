@@ -17,7 +17,7 @@
 
 #include <stdbool.h>
 
-u16 aadetect(void);
+s16 aadetect(void);
 void readReadSPI(u16 port);
 
 #endif
