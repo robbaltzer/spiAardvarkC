@@ -1,4 +1,4 @@
-TARGET = prog
+TARGET = lepton
 LIBS = -lm
 CC = gcc
 CFLAGS = -g -Wall

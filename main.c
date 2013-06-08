@@ -19,9 +19,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "aardvark.h"
 #include "main.h"
+#include "lepton.h"
 
 //=========================================================================
 // CONSTANTS
@@ -30,27 +32,28 @@
 
 #define SLAVE_RESP_SIZE     26
 
-static s16 m_port;
+s16 port;
 
 static void dump (Aardvark handle, int timeout_ms);
 
 int main (int argc, char *argv[])
 {
+	printf("Hello\r\n");
 
-/*
- * TODO
- *
-	 init()
-	 while(1) {
-		 churn_state_machine();
-		 os_delay(50);
-	 }
- */
-	printf("hello\r\n");
-	m_port = aadetect();
-	if (m_port != -1) {
-		readReadSPI(m_port);
+	leptonInit();
+	leptonStart();
+
+	while(1) {
+		leptonStateMachine();
+		usleep(250);
 	}
+
+#if 0
+	port = aadetect();
+	if (port != -1) {
+		readReadSPI(port);
+	}
+#endif
 
     return 0;
 }

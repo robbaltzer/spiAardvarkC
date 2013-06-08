@@ -26,6 +26,13 @@
 #include "aardvark.h"
 #include "main.h"
 
+//=========================================================================
+// CONSTANTS
+//=========================================================================
+#define BUFFER_SIZE      65535
+
+#define SLAVE_RESP_SIZE     26
+
 //
 // VoSPI IDs (0xFF00 - 0xFFFF)
 //
@@ -52,40 +59,123 @@
 //
 
 static u08 readSpiByte(void);
+static bool m_stateInit(void);
 
 typedef struct {
+	s16 port;
+    Aardvark handle;
 	u08 state;
 }LeptonData;
 
 typedef enum {
+	stateIdle,
+	stateInit,
 	stateSyncFindID,
 	stateSyncCheckPayload,
 	stateSyncCheckHeaderType,
 	stateSyncCheckPixelFormat,
+	stateError,
 }LeptonState;
 
 LeptonData leptonData;
 
-void stateMachine(void) {
 
+void leptonInit(void)
+{
+	leptonData.state = stateIdle;
+}
+
+void leptonStart(void)
+{
+	leptonData.state = stateInit;
+	printf("leptonStart\r\n");
+}
+
+void leptonStateMachine(void)
+{
 	switch (leptonData.state) {
+	case stateIdle:
+		// Do nothing
+		break;
+
+	case stateInit:
+		printf("$");
+		if (m_stateInit()) {
+			leptonData.state = stateSyncFindID;
+		}
+		break;
+
 	case stateSyncFindID:
 		break;
+
 	case stateSyncCheckPayload:
 		break;
+
 	case stateSyncCheckHeaderType:
 		break;
+
 	case stateSyncCheckPixelFormat:
 		break;
+
 	default:
 		printf("ERROR: stateMachine(): Hit default state\r\n");
 		break;
 	}
 }
 
+///////////////////////////////////
+// State Machine Functions
+///////////////////////////////////
+
+static bool m_stateInit(void){
+    int mode       = 1;
+    int timeout_ms = 500;
+    u08 i, slave_resp[SLAVE_RESP_SIZE];
+
+	leptonData.port = aadetect();
+
+	if (leptonData.port == -1) {
+		return false;
+	}
+
+    // Open the device
+    leptonData.handle = aa_open(leptonData.port);
+    if (leptonData.handle <= 0) {
+        printf("Unable to open Aardvark device on port %d\n", leptonData.port);
+        printf("Error code = %d\n", leptonData.handle);
+        return false;
+    }
+
+    // Ensure that the SPI subsystem is enabled
+    aa_configure(leptonData.handle, AA_CONFIG_SPI_I2C);
+
+    // Disable the Aardvark adapter's power pins.
+    // This command is only effective on v2.0 hardware or greater.
+    // The power pins on the v1.02 hardware are not enabled by default.
+    aa_target_power(leptonData.handle, AA_TARGET_POWER_NONE);
+
+    // Setup the clock phase
+    aa_spi_configure(leptonData.handle, mode >> 1, mode & 1, AA_SPI_BITORDER_MSB);
+
+    // Set the slave response
+    for (i=0; i<SLAVE_RESP_SIZE; ++i)
+        slave_resp[i] = 'A' + i;
+
+    aa_spi_slave_set_response(leptonData.handle, SLAVE_RESP_SIZE, slave_resp);
+
+    // Enable the slave
+    aa_spi_slave_enable(leptonData.handle);
+    return true;
+}
+
+///////////////////////////////////
+// Helper Functions
+///////////////////////////////////
+
 static u08 readSpiByte(void)
 {
 
+	return 0;
 }
 
 void getVoSPIPacket(void) {
