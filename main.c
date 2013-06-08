@@ -36,6 +36,17 @@ static void dump (Aardvark handle, int timeout_ms);
 
 int main (int argc, char *argv[])
 {
+
+/*
+ * TODO
+ *
+	 init()
+	 while(1) {
+		 churn_state_machine();
+		 os_delay(50);
+	 }
+ */
+	printf("hello\r\n");
 	m_port = aadetect();
 	if (m_port != -1) {
 		readReadSPI(m_port);

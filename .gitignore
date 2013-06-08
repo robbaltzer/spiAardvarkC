@@ -6,3 +6,9 @@
 _output/aardvark.so
 
 _output/main
+
+*.swp
+
+prog
+
+prog
