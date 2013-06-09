@@ -38,6 +38,8 @@ static void dump (Aardvark handle, int timeout_ms);
 
 int main (int argc, char *argv[])
 {
+
+#if 0
 	printf("Hello\r\n");
 
 	leptonInit();
@@ -48,7 +50,7 @@ int main (int argc, char *argv[])
 		usleep(250);
 	}
 
-#if 0
+#else
 	port = aadetect();
 	if (port != -1) {
 		readReadSPI(port);

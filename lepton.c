@@ -29,9 +29,20 @@
 //=========================================================================
 // CONSTANTS
 //=========================================================================
-#define BUFFER_SIZE      65535
+#define BUFFER_SIZE      	(65535)
+#define SLAVE_RESP_SIZE     (26)
+#define VOSPI_PACKET_SIZE  	(164)
 
-#define SLAVE_RESP_SIZE     26
+#define STATE(x) 			leptonData.state=x
+
+// VoSPI Packet IDs
+typedef enum {
+	idPallette 			= 0xFFF8, // Thru 0xFFFB?
+	idDiscard 			= 0xFFFC,
+	idAlternateStream 	= 0xFFFD,
+	idEOF 				= 0xFFFE,
+	idSOF 				= 0xFFFF,
+} VoSpiPacketId;
 
 //
 // VoSPI IDs (0xFF00 - 0xFFFF)
@@ -47,7 +58,7 @@
 //	Psuedocode:
 //
 //  Note: In general, if an error occurs (e.g. CRC is wrong), the state machine will go to step 1 and
-//        start over. This might be changed later depending on data reliablity.
+//        start over. This might be changed later depending on data reliability.
 //
 //	1. Start reading bytes until we see SOF ID (0xFFFF).
 //	2. Once we see the ID, capture the 164 bytes, calc CRC and compare, if valid,
@@ -65,12 +76,16 @@ typedef struct {
 	s16 port;
     Aardvark handle;
 	u08 state;
+	u08 bytesIn[VOSPI_PACKET_SIZE];
+	u08 bytesOut[VOSPI_PACKET_SIZE];
+
 }LeptonData;
 
 typedef enum {
 	stateIdle,
 	stateInit,
-	stateSyncFindID,
+	stateSyncFindIDFirst,
+	stateSyncFindIDSecond,
 	stateSyncCheckPayload,
 	stateSyncCheckHeaderType,
 	stateSyncCheckPixelFormat,
@@ -79,15 +94,14 @@ typedef enum {
 
 LeptonData leptonData;
 
-
 void leptonInit(void)
 {
-	leptonData.state = stateIdle;
+	STATE(stateIdle);
 }
 
 void leptonStart(void)
 {
-	leptonData.state = stateInit;
+	STATE(stateInit);
 	printf("leptonStart\r\n");
 }
 
@@ -99,13 +113,27 @@ void leptonStateMachine(void)
 		break;
 
 	case stateInit:
-		printf("$");
 		if (m_stateInit()) {
-			leptonData.state = stateSyncFindID;
+			STATE(stateSyncFindIDFirst);
+		}
+		else {
+			STATE(stateError);
 		}
 		break;
 
-	case stateSyncFindID:
+	case stateSyncFindIDFirst:
+		if (readSpiByte() == (u08) (idSOF >> 8)) {
+			STATE(stateSyncFindIDSecond);
+		}
+		break;
+
+	case stateSyncFindIDSecond:
+		if (readSpiByte() == (u08) (idSOF && 0xFF)) {
+			STATE(stateSyncCheckPayload);
+		}
+		else {
+			STATE(stateSyncFindIDFirst);
+		}
 		break;
 
 	case stateSyncCheckPayload:
@@ -115,6 +143,11 @@ void leptonStateMachine(void)
 		break;
 
 	case stateSyncCheckPixelFormat:
+		break;
+
+	case stateError:
+		printf("LeptonStateMachine: Ended in ERROR");
+		STATE(stateIdle);
 		break;
 
 	default:
@@ -129,7 +162,6 @@ void leptonStateMachine(void)
 
 static bool m_stateInit(void){
     int mode       = 1;
-    int timeout_ms = 500;
     u08 i, slave_resp[SLAVE_RESP_SIZE];
 
 	leptonData.port = aadetect();
@@ -174,7 +206,7 @@ static bool m_stateInit(void){
 
 static u08 readSpiByte(void)
 {
-
+    aa_spi_write(leptonData.handle, 1, leptonData.bytesIn, 1, leptonData.bytesOut);
 	return 0;
 }
 
