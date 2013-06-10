@@ -41,7 +41,8 @@ typedef enum {
 	idDiscard 			= 0xFFFC,
 	idAlternateStream 	= 0xFFFD,
 	idEOF 				= 0xFFFE,
-	idSOF 				= 0xFFFF,
+	idSOF 				= 0xF1F2,
+//	idSOF 				= 0xFFFF,
 } VoSpiPacketId;
 
 //
@@ -77,6 +78,8 @@ typedef struct {
     Aardvark handle;
 	u08 state;
 	u08 bytesIn[VOSPI_PACKET_SIZE];
+
+	u16 outIndex;
 	u08 bytesOut[VOSPI_PACKET_SIZE];
 
 }LeptonData;
@@ -96,6 +99,10 @@ LeptonData leptonData;
 
 void leptonInit(void)
 {
+	leptonData.outIndex = 0;
+	leptonData.bytesOut[0]=0xf1;
+	leptonData.bytesOut[1]=0xf2;
+
 	STATE(stateIdle);
 }
 
@@ -122,13 +129,17 @@ void leptonStateMachine(void)
 		break;
 
 	case stateSyncFindIDFirst:
-		if (readSpiByte() == (u08) (idSOF >> 8)) {
+	{
+		u08 byte = (u08) (idSOF >> 8);
+
+		if (readSpiByte() == byte) {
 			STATE(stateSyncFindIDSecond);
 		}
+	}
 		break;
 
 	case stateSyncFindIDSecond:
-		if (readSpiByte() == (u08) (idSOF && 0xFF)) {
+		if (readSpiByte() == (u08) (idSOF & 0xFF)) {
 			STATE(stateSyncCheckPayload);
 		}
 		else {
@@ -137,6 +148,8 @@ void leptonStateMachine(void)
 		break;
 
 	case stateSyncCheckPayload:
+		printf("Check payload\r\n");
+		STATE(stateIdle);
 		break;
 
 	case stateSyncCheckHeaderType:
@@ -206,8 +219,9 @@ static bool m_stateInit(void){
 
 static u08 readSpiByte(void)
 {
-    aa_spi_write(leptonData.handle, 1, leptonData.bytesIn, 1, leptonData.bytesOut);
-	return 0;
+    aa_spi_write(leptonData.handle, 1, &leptonData.bytesOut[leptonData.outIndex++], 1, leptonData.bytesIn);
+    if (leptonData.bytesIn[0]) printf("bytes in 0x%x\r\n", leptonData.bytesIn[0]);
+	return leptonData.bytesIn[0];
 }
 
 void getVoSPIPacket(void) {
