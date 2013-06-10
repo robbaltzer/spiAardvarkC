@@ -34,6 +34,7 @@
 #define VOSPI_PACKET_SIZE  	(164)
 
 #define STATE(x) 			leptonData.state=x
+#define IN_DATA				leptonData.bytesIn
 
 // VoSPI Packet IDs
 typedef enum {
@@ -41,8 +42,7 @@ typedef enum {
 	idDiscard 			= 0xFFFC,
 	idAlternateStream 	= 0xFFFD,
 	idEOF 				= 0xFFFE,
-	idSOF 				= 0xF1F2,
-//	idSOF 				= 0xFFFF,
+	idSOF 				= 0xFFFF,
 } VoSpiPacketId;
 
 //
@@ -71,18 +71,32 @@ typedef enum {
 //
 
 static u08 readSpiByte(void);
+static void readSpiBytes(u08 NumBytes);
 static bool m_stateInit(void);
 
 typedef struct {
 	s16 port;
     Aardvark handle;
 	u08 state;
-	u08 bytesIn[VOSPI_PACKET_SIZE];
+	u08* bytesIn;	// TODO: Make sure pointed at buffer VOSPI_PACKET_SIZE
+	u16 crc;
 
 	u16 outIndex;
-	u08 bytesOut[VOSPI_PACKET_SIZE];
+	u08* bytesOut;
 
 }LeptonData;
+
+static u08 inData[VOSPI_PACKET_SIZE];
+
+
+// SOF Packet
+static u08 sofPacket[VOSPI_PACKET_SIZE] =
+{
+		0xFF, 0xFF,		// ID
+		0xDE, 0xAD		// CRC
+
+
+};
 
 typedef enum {
 	stateIdle,
@@ -100,8 +114,10 @@ LeptonData leptonData;
 void leptonInit(void)
 {
 	leptonData.outIndex = 0;
-	leptonData.bytesOut[0]=0xf1;
-	leptonData.bytesOut[1]=0xf2;
+
+	// MOSI is tied to MISO so we can feed bytes we want to see
+	leptonData.bytesIn = inData;
+	leptonData.bytesOut = sofPacket;
 
 	STATE(stateIdle);
 }
@@ -111,6 +127,8 @@ void leptonStart(void)
 	STATE(stateInit);
 	printf("leptonStart\r\n");
 }
+
+// The state machine starts by trying to identify a SOF packet and syncing to it
 
 void leptonStateMachine(void)
 {
@@ -129,17 +147,16 @@ void leptonStateMachine(void)
 		break;
 
 	case stateSyncFindIDFirst:
-	{
-		u08 byte = (u08) (idSOF >> 8);
-
-		if (readSpiByte() == byte) {
+		if (readSpiByte() == (u08) (idSOF >> 8)) {
 			STATE(stateSyncFindIDSecond);
 		}
-	}
 		break;
 
 	case stateSyncFindIDSecond:
-		if (readSpiByte() == (u08) (idSOF & 0xFF)) {
+		if (readSpiByte() == (u08) (idSOF & 0x00FF)) {
+			// Read 2 bytes to get the SOF packet CRC
+			readSpiBytes(2);
+			leptonData.crc = (IN_DATA[0]>>8) + IN_DATA[1];
 			STATE(stateSyncCheckPayload);
 		}
 		else {
@@ -217,12 +234,19 @@ static bool m_stateInit(void){
 // Helper Functions
 ///////////////////////////////////
 
+// Read one SPI byte. We write out a byte that is looped back for debug (before we got a Lepton camera).
 static u08 readSpiByte(void)
 {
-    aa_spi_write(leptonData.handle, 1, &leptonData.bytesOut[leptonData.outIndex++], 1, leptonData.bytesIn);
-    if (leptonData.bytesIn[0]) printf("bytes in 0x%x\r\n", leptonData.bytesIn[0]);
-	return leptonData.bytesIn[0];
+    aa_spi_write(leptonData.handle, 1, &leptonData.bytesOut[leptonData.outIndex++], 1, IN_DATA);
+	return IN_DATA[0];
 }
+
+// Read NumBytes bytes via SPI
+static void readSpiBytes(u08 NumBytes)
+{
+    aa_spi_write(leptonData.handle, NumBytes, &leptonData.bytesOut[leptonData.outIndex += NumBytes], NumBytes, IN_DATA);
+}
+
 
 void getVoSPIPacket(void) {
 	//Reads 164 bytes of data
