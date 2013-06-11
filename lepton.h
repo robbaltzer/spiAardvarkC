@@ -22,6 +22,17 @@
 #ifndef __lepton_h
 #define __lepton_h
 
+typedef enum {
+	stateIdle,
+	stateInit,
+	stateSyncFindIDFirst,
+	stateSyncFindIDSecond,
+	stateSyncCheckPayload,
+	stateSyncCheckHeaderType,
+	stateSyncCheckPixelFormat,
+	stateError,
+}LeptonState;
+
 void leptonStateMachine(void);
 void leptonInit(void);
 void leptonStart(void);

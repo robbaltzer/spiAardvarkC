@@ -25,25 +25,17 @@
 
 #include "aardvark.h"
 #include "main.h"
+#include "lepton.h"
 
-//=========================================================================
-// CONSTANTS
-//=========================================================================
 #define BUFFER_SIZE      	(65535)
 #define SLAVE_RESP_SIZE     (26)
 #define VOSPI_PACKET_SIZE  	(164)
+#define MAX_PAYLOAD_SIZE	(164)
 
 #define STATE(x) 			leptonData.state=x
 #define IN_DATA				leptonData.bytesIn
-
-// VoSPI Packet IDs
-typedef enum {
-	idPallette 			= 0xFFF8, // Thru 0xFFFB?
-	idDiscard 			= 0xFFFC,
-	idAlternateStream 	= 0xFFFD,
-	idEOF 				= 0xFFFE,
-	idSOF 				= 0xFFFF,
-} VoSpiPacketId;
+#define OUT_DATA			leptonData.bytesOut
+#define IDX					leptonData.index
 
 //
 // VoSPI IDs (0xFF00 - 0xFFFF)
@@ -54,6 +46,50 @@ typedef enum {
 //		0xFFFC - Discard packet
 //		0xFFF8 - 0xFFFB - Pallette Header Packet
 //		0xFF00 - 0xFFF7 Reserved
+
+// VoSPI Packet IDs
+typedef enum {
+	idPallette 			= 0xFFF8, // Thru 0xFFFB?
+	idDiscard 			= 0xFFFC,
+	idAlternateStream 	= 0xFFFD,
+	idEOF 				= 0xFFFE,
+	idSOF 				= 0xFFFF,
+} VoSpiPacketId;
+
+
+enum {
+	sofID 				= 0,
+	sofCRC 				= 2,
+	sofNumPayloadBytes 	= 4,
+	sofHeaderType	 	= 6,
+	sofPixelFormat	 	= 7,
+} SofBytePosition;
+
+enum {
+    spiMODE_POL0_PHASE0 = 0,
+    spiMODE_POL0_PHASE1 = 1,
+    spiMODE_POL1_PHASE0 = 2,
+    spiMODE_POL1_PHASE1 = 3,
+} SpiMode;
+
+/*
+ * VoSPI Physical Implementation
+ *
+ * VoSPI uses a modified Serial Peripheral Interface (SPI) to carry the data.
+ * The SCK (Serial Clock), /CS (Chip Select, active low), and MISO (Master In/Slave Out)
+ * signals are present, but VoSPI does not use the MOSI (Master Out/Slave In) signal.
+ *
+ * Implementations are generally restricted to a single master and a single slave,
+ * due to the strength of the line drivers in the hardware.
+ * The Lepton operates as a slave port only. The host controller must operate as an
+ * SPI master to generate the SCK (Serial Clock) signal.
+ *
+ * The Lepton uses SPI Mode 3 (CPOL=1, CPHA=1). SCK is high when idle.
+ * Data is set up by the Lepton on the falling edge of SCK, and should be sampled by the
+ * host controller on the rising edge of SCK.
+ *
+ * Data is transferred most-significant byte first and in big-endian order
+ */
 
 //
 //	Psuedocode:
@@ -70,9 +106,30 @@ typedef enum {
 //  5. Deal with timing and go to step 2.
 //
 
-static u08 readSpiByte(void);
 static void readSpiBytes(u08 NumBytes);
 static bool m_stateInit(void);
+
+typedef enum {
+	hdrIgnore 	= 0,
+	hdrSOF	  	= 1,
+	hdrEOF    	= 2,
+	hdrPallet0  = 16,
+	hdrPallet1,
+	hdrPallet2,
+	hdrPallet3,
+	hdrPallet4,
+	hdrPallet5,
+	hdrPallet6,
+	hdrPallet7,
+	hdrPallet8,
+	hdrPallet9,
+	hdrPallet10,
+	hdrPallet11,
+	hdrPallet12,
+	hdrPallet13,
+	hdrPallet14,
+	hdrPallet15,
+}HeaderType;
 
 typedef struct {
 	s16 port;
@@ -80,44 +137,31 @@ typedef struct {
 	u08 state;
 	u08* bytesIn;	// TODO: Make sure pointed at buffer VOSPI_PACKET_SIZE
 	u16 crc;
+	u16 payloadBytes;
+	HeaderType headerType;
 
-	u16 outIndex;
-	u08* bytesOut;
-
+	u16 index;
+	u08* bytesOut;	// Note: This is used primarily as a debug tool w/ MOSI & MISO tied together the data loops back.
 }LeptonData;
 
 static u08 inData[VOSPI_PACKET_SIZE];
 
-
-// SOF Packet
+// LoopBack SOF Packet (VoSPI is big-endian)
 static u08 sofPacket[VOSPI_PACKET_SIZE] =
 {
-		0xFF, 0xFF,		// ID
-		0xDE, 0xAD		// CRC
-
-
+		0xFF, 0xFF,		// ID  				= 0xFFFF
+		0xDE, 0xAD,		// CRC 				= 0xDEAD
+		0x00, 0xA4,		// PAYLOAD BYTES 	= 0xA4 = 164
+		hdrSOF			// HEADER TYPE		= hdrSOF = 1
 };
-
-typedef enum {
-	stateIdle,
-	stateInit,
-	stateSyncFindIDFirst,
-	stateSyncFindIDSecond,
-	stateSyncCheckPayload,
-	stateSyncCheckHeaderType,
-	stateSyncCheckPixelFormat,
-	stateError,
-}LeptonState;
 
 LeptonData leptonData;
 
 void leptonInit(void)
 {
-	leptonData.outIndex = 0;
-
 	// MOSI is tied to MISO so we can feed bytes we want to see
-	leptonData.bytesIn = inData;
-	leptonData.bytesOut = sofPacket;
+	IN_DATA  = inData;
+	OUT_DATA = sofPacket;
 
 	STATE(stateIdle);
 }
@@ -147,17 +191,26 @@ void leptonStateMachine(void)
 		break;
 
 	case stateSyncFindIDFirst:
-		if (readSpiByte() == (u08) (idSOF >> 8)) {
+		IDX = 0;
+		readSpiBytes(1);
+		if (IN_DATA[sofID] == (u08) (idSOF >> 8)) {
 			STATE(stateSyncFindIDSecond);
 		}
 		break;
 
 	case stateSyncFindIDSecond:
-		if (readSpiByte() == (u08) (idSOF & 0x00FF)) {
+		readSpiBytes(1);
+		if (IN_DATA[sofID+1] == (u08) (idSOF & 0x00FF)) {
 			// Read 2 bytes to get the SOF packet CRC
 			readSpiBytes(2);
-			leptonData.crc = (IN_DATA[0]>>8) + IN_DATA[1];
-			STATE(stateSyncCheckPayload);
+			leptonData.crc = ((u16) IN_DATA[sofCRC]<<8) + (u16) IN_DATA[sofCRC+1];
+			if (leptonData.crc >= 0xFFF0) {
+				STATE(stateSyncFindIDFirst);
+			}
+			else {
+				printf("crc = 0x%x\r\n", leptonData.crc);
+				STATE(stateSyncCheckPayload);
+			}
 		}
 		else {
 			STATE(stateSyncFindIDFirst);
@@ -165,14 +218,31 @@ void leptonStateMachine(void)
 		break;
 
 	case stateSyncCheckPayload:
-		printf("Check payload\r\n");
-		STATE(stateIdle);
+		readSpiBytes(2);
+		leptonData.payloadBytes = leptonData.crc = ((u16) IN_DATA[sofNumPayloadBytes]<<8) + (u16) IN_DATA[sofNumPayloadBytes+1];
+		printf("Payload bytes %d\r\n", leptonData.payloadBytes);
+		if (leptonData.payloadBytes <= MAX_PAYLOAD_SIZE) {
+			STATE(stateSyncCheckHeaderType);
+		}
+		else {
+			STATE(stateSyncFindIDFirst);
+		}
 		break;
 
 	case stateSyncCheckHeaderType:
+		readSpiBytes(1);
+		leptonData.headerType = (HeaderType) IN_DATA[sofHeaderType];
+		if (leptonData.headerType == hdrSOF) {
+			STATE(stateSyncCheckPixelFormat);
+		}
+		else {
+			STATE(stateSyncFindIDFirst);
+		}
 		break;
 
 	case stateSyncCheckPixelFormat:
+		printf("stateSyncCheckPixelFormat\r");
+		exit(0);
 		break;
 
 	case stateError:
@@ -181,7 +251,7 @@ void leptonStateMachine(void)
 		break;
 
 	default:
-		printf("ERROR: stateMachine(): Hit default state\r\n");
+		printf("ERROR: stateMachine(): Hit default state\r");
 		break;
 	}
 }
@@ -191,7 +261,7 @@ void leptonStateMachine(void)
 ///////////////////////////////////
 
 static bool m_stateInit(void){
-    int mode       = 1;
+    int mode       = spiMODE_POL1_PHASE1;
     u08 i, slave_resp[SLAVE_RESP_SIZE];
 
 	leptonData.port = aadetect();
@@ -234,17 +304,11 @@ static bool m_stateInit(void){
 // Helper Functions
 ///////////////////////////////////
 
-// Read one SPI byte. We write out a byte that is looped back for debug (before we got a Lepton camera).
-static u08 readSpiByte(void)
-{
-    aa_spi_write(leptonData.handle, 1, &leptonData.bytesOut[leptonData.outIndex++], 1, IN_DATA);
-	return IN_DATA[0];
-}
-
 // Read NumBytes bytes via SPI
 static void readSpiBytes(u08 NumBytes)
 {
-    aa_spi_write(leptonData.handle, NumBytes, &leptonData.bytesOut[leptonData.outIndex += NumBytes], NumBytes, IN_DATA);
+    aa_spi_write(leptonData.handle, NumBytes, &OUT_DATA[IDX], NumBytes, &IN_DATA[IDX]);
+    IDX += NumBytes;
 }
 
 

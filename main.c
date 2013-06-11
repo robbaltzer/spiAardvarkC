@@ -116,20 +116,6 @@ void readReadSPI(u16 port)
     data_out1[4] = 0xDE;
     data_out1[5] = 0xAD;
 
-//    if (argc < 4) {
-//        printf("usage: aaspi_slave PORT MODE TIMEOUT_MS\n");
-//        printf("  mode 0 : pol = 0, phase = 0\n");
-//        printf("  mode 1 : pol = 0, phase = 1\n");
-//        printf("  mode 2 : pol = 1, phase = 0\n");
-//        printf("  mode 3 : pol = 1, phase = 1\n");
-//        printf("\n");
-//        printf("  The timeout value specifies the time to\n");
-//        printf("  block until the first packet is received.\n");
-//        printf("  If the timeout is -1, the program will\n");
-//        printf("  block indefinitely.\n");
-//        return 1;
-//    }
-
     // Open the device
     handle = aa_open(port);
     if (handle <= 0) {
