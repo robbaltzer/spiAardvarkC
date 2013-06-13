@@ -35,7 +35,8 @@
 #define STATE(x) 			leptonData.state=x
 #define IN_DATA				leptonData.bytesIn
 #define OUT_DATA			leptonData.bytesOut
-#define IDX					leptonData.index
+#define IDX					leptonData.inIndex
+#define ODX					leptonData.outIndex
 
 //
 // VoSPI IDs (0xFF00 - 0xFFFF)
@@ -140,7 +141,8 @@ typedef struct {
 	u16 payloadBytes;
 	HeaderType headerType;
 
-	u16 index;
+	u16 inIndex;
+	u16 outIndex;
 	u08* bytesOut;	// Note: This is used primarily as a debug tool w/ MOSI & MISO tied together the data loops back.
 }LeptonData;
 
@@ -169,6 +171,7 @@ void leptonInit(void)
 void leptonStart(void)
 {
 	STATE(stateInit);
+	ODX = 0;
 	printf("leptonStart\r\n");
 }
 
@@ -203,7 +206,8 @@ void leptonStateMachine(void)
 		if (IN_DATA[sofID+1] == (u08) (idSOF & 0x00FF)) {
 			// Read 2 bytes to get the SOF packet CRC
 			readSpiBytes(2);
-			leptonData.crc = ((u16) IN_DATA[sofCRC]<<8) + (u16) IN_DATA[sofCRC+1];
+			leptonData.crc = ((u16) IN_DATA[sofCRC]<<8) +
+						      (u16) IN_DATA[sofCRC+1];
 			if (leptonData.crc >= 0xFFF0) {
 				STATE(stateSyncFindIDFirst);
 			}
@@ -219,7 +223,8 @@ void leptonStateMachine(void)
 
 	case stateSyncCheckPayload:
 		readSpiBytes(2);
-		leptonData.payloadBytes = leptonData.crc = ((u16) IN_DATA[sofNumPayloadBytes]<<8) + (u16) IN_DATA[sofNumPayloadBytes+1];
+		leptonData.payloadBytes = leptonData.crc = ((u16) IN_DATA[sofNumPayloadBytes]<<8) +
+													(u16) IN_DATA[sofNumPayloadBytes+1];
 		printf("Payload bytes %d\r\n", leptonData.payloadBytes);
 		if (leptonData.payloadBytes <= MAX_PAYLOAD_SIZE) {
 			STATE(stateSyncCheckHeaderType);
@@ -307,8 +312,9 @@ static bool m_stateInit(void){
 // Read NumBytes bytes via SPI
 static void readSpiBytes(u08 NumBytes)
 {
-    aa_spi_write(leptonData.handle, NumBytes, &OUT_DATA[IDX], NumBytes, &IN_DATA[IDX]);
+    aa_spi_write(leptonData.handle, NumBytes, &OUT_DATA[ODX], NumBytes, &IN_DATA[IDX]);
     IDX += NumBytes;
+    ODX += NumBytes;
 }
 
 
