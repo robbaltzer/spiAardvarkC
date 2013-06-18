@@ -22,22 +22,32 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "aardvark.h"
 #include "main.h"
 #include "lepton.h"
 #include "crc.h"
 
+
 #define BUFFER_SIZE      	(65535)
 #define SLAVE_RESP_SIZE     (26)
 #define VOSPI_PACKET_SIZE  	(164)
 #define MAX_PAYLOAD_SIZE	(164)
+
+#define FRAMES_PER_SECOND   (9)
+#define USECONDS_PER_FRAME	(1000000/FRAMES_PER_SECOND)
+
+#define H_PIXELS			(80)
+#define V_LINES				(60)
 
 #define STATE(x) 			leptonData.state=x
 #define IN_DATA				leptonData.bytesIn
 #define OUT_DATA			leptonData.bytesOut
 #define IDX					leptonData.inIndex
 #define ODX					leptonData.outIndex
+#define FB					leptonData.frameBuffer
+#define FBX					leptonData.frameBufferIndex
 
 //
 // VoSPI IDs (0xFF00 - 0xFFFF)
@@ -58,6 +68,8 @@ typedef enum {
 	idSOF 				= 0xFFFF,
 } VoSpiPacketId;
 
+#define ID_BYTE_POSITION	(0)
+#define CRC_BYTE_POSITION	(2)
 
 enum {
 	sofID 				= 0,
@@ -66,6 +78,8 @@ enum {
 	sofHeaderType	 	= 6,
 	sofPixelFormat	 	= 7,
 } SofBytePosition;
+
+
 
 enum {
     spiMODE_POL0_PHASE0 = 0,
@@ -148,6 +162,9 @@ typedef struct {
 	u16 inIndex;
 	u16 outIndex;
 	u08* bytesOut;	// Note: This is used primarily as a debug tool w/ MOSI & MISO tied together the data loops back.
+
+	u08 frameBuffer[H_PIXELS*V_LINES];
+	u16 frameBufferIndex;
 }LeptonData;
 
 static u08 inData[VOSPI_PACKET_SIZE];
@@ -202,24 +219,21 @@ void leptonInit(void)
 {
 	// MOSI is tied to MISO so we can feed bytes we want to see
 	IN_DATA  = inData;
-	OUT_DATA = sofPacket;
+//	OUT_DATA = sofPacket;
 
 	STATE(stateIdle);
 }
 
 void leptonStart(void)
 {
-//	u08 data[10];
+	// Build emulation stream that gets looped back MOSI->MISO
+	buildStream();
+	OUT_DATA = emulationStream;
 
-//	words2bytes(line0Packet, data, 2);
-//	buildStream();
-//		void words2bytes(u16* words, u08* bytes, numWords)
-	calcCrc();
-
-//	STATE(stateInit);
+	STATE(stateInit);
 	ODX = 0;
 	printf("leptonStart\r\n");
-	exit(0);
+//	exit(0);
 }
 
 // The state machine starts by trying to identify a SOF packet and syncing to it
@@ -233,69 +247,125 @@ void leptonStateMachine(void)
 
 	case stateInit:
 		if (m_stateInit()) {
-			STATE(stateSyncFindIDFirst);
+			STATE(stateFindIDFirst);
 		}
 		else {
 			STATE(stateError);
 		}
 		break;
 
-	case stateSyncFindIDFirst:
+	case stateDelayFourFrames:
+		usleep(4*USECONDS_PER_FRAME);
+		STATE(stateFindIDFirst);
+		break;
+
+	// Look for XF in first byte
+	case stateFindIDFirst:
 		IDX = 0;
 		readSpiBytes(1);
-		if (IN_DATA[sofID] == (u08) (idSOF >> 8)) {
-			STATE(stateSyncFindIDSecond);
+		if ((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0x0F) {
+			STATE(stateFindIDSecond);
+		}
+		else {
+			STATE(stateDelayFourFrames);
 		}
 		break;
 
-	case stateSyncFindIDSecond:
+	// Look for FX in second byte
+	case stateFindIDSecond:
 		readSpiBytes(1);
-		if (IN_DATA[sofID+1] == (u08) (idSOF & 0x00FF)) {
-			// Read 2 bytes to get the SOF packet CRC
-			readSpiBytes(2);
-			leptonData.crc = ((u16) IN_DATA[sofCRC]<<8) +
-						      (u16) IN_DATA[sofCRC+1];
-			if (leptonData.crc >= 0xFFF0) {
-				STATE(stateSyncFindIDFirst);
-			}
-			else {
-				printf("crc = 0x%x\r\n", leptonData.crc);
-				STATE(stateSyncCheckPayload);
-			}
+		if ((IN_DATA[ID_BYTE_POSITION+1] & 0xF0) == 0xF0) {
+			STATE(stateFindIDSecond);
 		}
 		else {
-			STATE(stateSyncFindIDFirst);
+			STATE(stateDelayFourFrames);
 		}
 		break;
 
-	case stateSyncCheckPayload:
-		readSpiBytes(2);
-		leptonData.payloadBytes = leptonData.crc = ((u16) IN_DATA[sofNumPayloadBytes]<<8) +
-													(u16) IN_DATA[sofNumPayloadBytes+1];
-		printf("Payload bytes %d\r\n", leptonData.payloadBytes);
-		if (leptonData.payloadBytes <= MAX_PAYLOAD_SIZE) {
-			STATE(stateSyncCheckHeaderType);
-		}
-		else {
-			STATE(stateSyncFindIDFirst);
-		}
+	// Read the rest of the packet
+	case stateGetRemaining:
+		readSpiBytes(VOSPI_PACKET_SIZE-2);
+		STATE(stateReadPacket);
 		break;
 
-	case stateSyncCheckHeaderType:
-		readSpiBytes(1);
-		leptonData.headerType = (HeaderType) IN_DATA[sofHeaderType];
-		if (leptonData.headerType == hdrSOF) {
-			STATE(stateSyncCheckPixelFormat);
+	// Read next packet
+	case stateReadPacket:
+		IDX = 0;
+		readSpiBytes(VOSPI_PACKET_SIZE);
+
+		// Check if ID field looks like video packet on HLine 0
+		if (((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0) &&
+				((IN_DATA[ID_BYTE_POSITION+1]) == 0)) {
+			STATE(stateCheckCRC);
+		}
+
+		// Check if ID field looks like discard packet
+		else if (((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0x0F) &&
+				((IN_DATA[ID_BYTE_POSITION+1] & 0xF0) == 0xF0)) {
+			// Keep reading packets
 		}
 		else {
-			STATE(stateSyncFindIDFirst);
+			STATE(stateDelayFourFrames);
 		}
+
+		// If Discard, read another packet,
+		// If video packet, check CRC, store first line and state = readvideopackets
+		// else goto stateDelayFourFrames
 		break;
 
-	case stateSyncCheckPixelFormat:
-		printf("stateSyncCheckPixelFormat\r");
-		exit(0);
+	case stateCheckCRC:
+	{
+		u16 calcCRC, packetCRC;
+
+		packetCRC = (u16) IN_DATA[CRC_BYTE_POSITION] << 8;
+		packetCRC = packetCRC + (u16) IN_DATA[CRC_BYTE_POSITION + 1];
+
+		//Zero out bytes
+		IN_DATA[0] = 0;		// T TODO: Do something with T
+		IN_DATA[2] = 0;		// CRC16 MSB
+		IN_DATA[3] = 0;		// CRC16 LSB
+
+		calcCRC = fast_crc16(0x0, IN_DATA, VOSPI_PACKET_SIZE);
+		if (packetCRC != calcCRC) {
+			STATE(stateDelayFourFrames);
+		}
+		else {
+			// store first line of video in FB
+		}
+	}
 		break;
+
+//	case stateReadVideo:
+//		break;
+
+//	case stateSyncCheckPayload:
+//		readSpiBytes(2);
+//		leptonData.payloadBytes = leptonData.crc = ((u16) IN_DATA[sofNumPayloadBytes]<<8) +
+//													(u16) IN_DATA[sofNumPayloadBytes+1];
+//		printf("Payload bytes %d\r\n", leptonData.payloadBytes);
+//		if (leptonData.payloadBytes <= MAX_PAYLOAD_SIZE) {
+//			STATE(stateSyncCheckHeaderType);
+//		}
+//		else {
+//			STATE(stateSyncFindIDFirst);
+//		}
+//		break;
+//
+//	case stateSyncCheckHeaderType:
+//		readSpiBytes(1);
+//		leptonData.headerType = (HeaderType) IN_DATA[sofHeaderType];
+//		if (leptonData.headerType == hdrSOF) {
+//			STATE(stateSyncCheckPixelFormat);
+//		}
+//		else {
+//			STATE(stateSyncFindIDFirst);
+//		}
+//		break;
+//
+//	case stateSyncCheckPixelFormat:
+//		printf("stateSyncCheckPixelFormat\r");
+//		exit(0);
+//		break;
 
 	case stateError:
 		printf("LeptonStateMachine: Ended in ERROR");
@@ -385,7 +455,7 @@ static void buildStream(void)
 	u08 discardPacketBytes[VOSPI_PACKET_SIZE];
 	u08 line0PacketBytes[VOSPI_PACKET_SIZE];
 	u08 line59PacketBytes[VOSPI_PACKET_SIZE];
-	u08 randomBytes[4] = {0xff, 0xfe, 0, 9};
+	u08 randomBytes[4] = {0xf1, 0xfe, 0, 9};
 
 	words2bytes(line0Packet, line0PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(line59Packet, line59PacketBytes, VOSPI_PACKET_SIZE/2);
