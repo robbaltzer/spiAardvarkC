@@ -22,6 +22,5 @@
 #ifndef CRC_H_
 #define CRC_H_
 #include "aardvark.h"
-u16 crc16(u08 *data_p, u08 length);
-
+u16 fast_crc16(u16 crc, u08 *buffer, u08 len);
 #endif /* CRC_H_ */

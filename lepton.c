@@ -26,6 +26,7 @@
 #include "aardvark.h"
 #include "main.h"
 #include "lepton.h"
+#include "crc.h"
 
 #define BUFFER_SIZE      	(65535)
 #define SLAVE_RESP_SIZE     (26)
@@ -111,6 +112,7 @@ static void readSpiBytes(u08 NumBytes);
 static bool m_stateInit(void);
 static void words2bytes(u16* words, u08* bytes, u16 numWords);
 static void buildStream(void);
+static void calcCrc(void); //debug
 
 typedef enum {
 	hdrIgnore 	= 0,
@@ -210,12 +212,14 @@ void leptonStart(void)
 //	u08 data[10];
 
 //	words2bytes(line0Packet, data, 2);
-	buildStream();
+//	buildStream();
 //		void words2bytes(u16* words, u08* bytes, numWords)
+	calcCrc();
 
 //	STATE(stateInit);
 	ODX = 0;
 	printf("leptonStart\r\n");
+	exit(0);
 }
 
 // The state machine starts by trying to identify a SOF packet and syncing to it
@@ -372,9 +376,7 @@ static void words2bytes(u16* words, u08* bytes, u16 numWords)
 
 	for (i = 0 ; i < numWords ; i++) {
 		bytes[(i*2)] = (*words) >> 8;
-		printf("byte 0x%x\r\n", bytes[(i*2)]);
 		bytes[(i*2) + 1] = (u08) ((*words++) & 0xff);
-		printf("byte 0x%x\r\n", bytes[(i*2) + 1]);
 	}
 }
 
@@ -396,4 +398,23 @@ static void buildStream(void)
 	memcpy(&emulationStream[(2*VOSPI_PACKET_SIZE)+4], line0PacketBytes, VOSPI_PACKET_SIZE);
 	memcpy(&emulationStream[(3*VOSPI_PACKET_SIZE)+4], line59PacketBytes, VOSPI_PACKET_SIZE);
 	printf("done\r\n");
+}
+
+// Debug function to make sure CRC-16 is working.
+// Packets are calc'd w/ CRC and T fields set to zero.
+static void calcCrc(void)
+{
+	u08 localPacket[VOSPI_PACKET_SIZE];
+	u16 crc;
+
+	// Convert words to bytes
+	words2bytes(line0Packet, localPacket, VOSPI_PACKET_SIZE/2);
+
+	//Zero out bytes
+	localPacket[0] = 0;		// T
+	localPacket[2] = 0;		// CRC16 MSB
+	localPacket[3] = 0;		// CRC16 LSB
+
+	crc = fast_crc16(0x0, localPacket, VOSPI_PACKET_SIZE);
+	printf("crc = 0x%x\r\n", crc);
 }
