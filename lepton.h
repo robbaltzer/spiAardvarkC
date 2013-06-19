@@ -22,17 +22,6 @@
 #ifndef __lepton_h
 #define __lepton_h
 
-//typedef enum {
-//	stateIdle,
-//	stateInit,
-//	stateSyncFindIDFirst,
-//	stateSyncFindIDSecond,
-//	stateSyncCheckPayload,
-//	stateSyncCheckHeaderType,
-//	stateSyncCheckPixelFormat,
-//	stateError,
-//}LeptonState;
-
 typedef enum {
 	stateIdle,
 	stateInit,
@@ -41,7 +30,9 @@ typedef enum {
 	stateFindIDSecond,
 	stateGetRemaining,
 	stateReadPacket,
+	stateReadLineOfVideo,
 	stateCheckCRC,
+	stateDelayBetweenFrames,
 	stateError,
 }LeptonState;
 

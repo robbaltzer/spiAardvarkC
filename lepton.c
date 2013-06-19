@@ -32,7 +32,11 @@
 
 #define BUFFER_SIZE      	(65535)
 #define SLAVE_RESP_SIZE     (26)
+
+
 #define VOSPI_PACKET_SIZE  	(164)
+#define VOSPI_HEADER_BYTES	(4)
+#define H_LINE_BYTES		(VOSPI_PACKET_SIZE - VOSPI_HEADER_BYTES) // 80 pixels per line, 2 bytes each = 160
 #define MAX_PAYLOAD_SIZE	(164)
 
 #define FRAMES_PER_SECOND   (9)
@@ -48,6 +52,7 @@
 #define ODX					leptonData.outIndex
 #define FB					leptonData.frameBuffer
 #define FBX					leptonData.frameBufferIndex
+#define LINE				leptonData.line
 
 //
 // VoSPI IDs (0xFF00 - 0xFFFF)
@@ -165,6 +170,7 @@ typedef struct {
 
 	u08 frameBuffer[H_PIXELS*V_LINES];
 	u16 frameBufferIndex;
+	u08 line;
 }LeptonData;
 
 static u08 inData[VOSPI_PACKET_SIZE];
@@ -296,6 +302,7 @@ void leptonStateMachine(void)
 		// Check if ID field looks like video packet on HLine 0
 		if (((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0) &&
 				((IN_DATA[ID_BYTE_POSITION+1]) == 0)) {
+			LINE = 0;
 			STATE(stateCheckCRC);
 		}
 
@@ -330,42 +337,29 @@ void leptonStateMachine(void)
 			STATE(stateDelayFourFrames);
 		}
 		else {
-			// store first line of video in FB
+			memcpy(&FB[LINE*H_LINE_BYTES], &IN_DATA[VOSPI_HEADER_BYTES], H_LINE_BYTES);
+			LINE = LINE + 1;
+			if (LINE == V_LINES) {
+				STATE(stateDelayBetweenFrames);
+			}
+			else {
+				STATE(stateReadLineOfVideo);
+			}
 		}
 	}
 		break;
 
-//	case stateReadVideo:
-//		break;
+	case stateReadLineOfVideo:
+		IDX = 0;
+		readSpiBytes(VOSPI_PACKET_SIZE);
+		STATE(stateCheckCRC);
+		break;
 
-//	case stateSyncCheckPayload:
-//		readSpiBytes(2);
-//		leptonData.payloadBytes = leptonData.crc = ((u16) IN_DATA[sofNumPayloadBytes]<<8) +
-//													(u16) IN_DATA[sofNumPayloadBytes+1];
-//		printf("Payload bytes %d\r\n", leptonData.payloadBytes);
-//		if (leptonData.payloadBytes <= MAX_PAYLOAD_SIZE) {
-//			STATE(stateSyncCheckHeaderType);
-//		}
-//		else {
-//			STATE(stateSyncFindIDFirst);
-//		}
-//		break;
-//
-//	case stateSyncCheckHeaderType:
-//		readSpiBytes(1);
-//		leptonData.headerType = (HeaderType) IN_DATA[sofHeaderType];
-//		if (leptonData.headerType == hdrSOF) {
-//			STATE(stateSyncCheckPixelFormat);
-//		}
-//		else {
-//			STATE(stateSyncFindIDFirst);
-//		}
-//		break;
-//
-//	case stateSyncCheckPixelFormat:
-//		printf("stateSyncCheckPixelFormat\r");
-//		exit(0);
-//		break;
+	case stateDelayBetweenFrames:
+		// TODO: Let someone know we have a frame
+		usleep(USECONDS_PER_FRAME); // TODO: Really?
+		STATE(stateReadPacket);
+		break;
 
 	case stateError:
 		printf("LeptonStateMachine: Ended in ERROR");
