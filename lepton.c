@@ -210,14 +210,9 @@ static u16 discardPacket[VOSPI_PACKET_SIZE/2] =
 	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
 };
 
-
-
-
 // Five packets with 4 random bytes prepended used to emulate
 // a "real world" byte stream coming from a Lepton
 static u08 emulationStream[(VOSPI_PACKET_SIZE*5) + 4];
-
-
 
 LeptonData leptonData;
 
@@ -239,7 +234,6 @@ void leptonStart(void)
 	STATE(stateInit);
 	ODX = 0;
 	printf("leptonStart\r\n");
-//	exit(0);
 }
 
 // The state machine starts by trying to identify a SOF packet and syncing to it
@@ -281,7 +275,7 @@ void leptonStateMachine(void)
 	case stateFindIDSecond:
 		readSpiBytes(1);
 		if ((IN_DATA[ID_BYTE_POSITION+1] & 0xF0) == 0xF0) {
-			STATE(stateFindIDSecond);
+			STATE(stateGetRemaining);
 		}
 		else {
 			STATE(stateDelayFourFrames);
@@ -339,7 +333,8 @@ void leptonStateMachine(void)
 		else {
 			memcpy(&FB[LINE*H_LINE_BYTES], &IN_DATA[VOSPI_HEADER_BYTES], H_LINE_BYTES);
 			LINE = LINE + 1;
-			if (LINE == V_LINES) {
+//			if (LINE == V_LINES) {	// TODO: switch back once we have a real camera
+			if (LINE == 2) {
 				STATE(stateDelayBetweenFrames);
 			}
 			else {
@@ -359,6 +354,8 @@ void leptonStateMachine(void)
 		// TODO: Let someone know we have a frame
 		usleep(USECONDS_PER_FRAME); // TODO: Really?
 		STATE(stateReadPacket);
+		printf("Frame RX'd lines %d \r\n", LINE);
+		exit(0);
 		break;
 
 	case stateError:
