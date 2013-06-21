@@ -131,7 +131,6 @@ static void readSpiBytes(u08 NumBytes);
 static bool m_stateInit(void);
 static void words2bytes(u16* words, u08* bytes, u16 numWords);
 static void buildStream(void);
-static void calcCrc(void); //debug
 
 typedef enum {
 	hdrIgnore 	= 0,
@@ -175,15 +174,7 @@ typedef struct {
 
 static u08 inData[VOSPI_PACKET_SIZE];
 
-// LoopBack SOF Packet (VoSPI is big-endian)
-static u08 sofPacket[VOSPI_PACKET_SIZE] =
-{
-		0xFF, 0xFF,		// ID  				= 0xFFFF
-		0xDE, 0xAD,		// CRC 				= 0xDEAD
-		0x00, 0xA4,		// PAYLOAD BYTES 	= 0xA4 = 164
-		hdrSOF			// HEADER TYPE		= hdrSOF = 1
-};
-
+// These are sample packets off of real hardware for DEBUG
 static u16 line0Packet[VOSPI_PACKET_SIZE/2] =
 {
 	0x3000, 0x8c08, 0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000a, 0x000b, 0x000c, 0x000d, 0x000e,
@@ -212,16 +203,14 @@ static u16 discardPacket[VOSPI_PACKET_SIZE/2] =
 
 // Five packets with 4 random bytes prepended used to emulate
 // a "real world" byte stream coming from a Lepton
-static u08 emulationStream[(VOSPI_PACKET_SIZE*5) + 4];
+static u08 emulationStream[(VOSPI_PACKET_SIZE*20) + 4];
 
 LeptonData leptonData;
 
 void leptonInit(void)
 {
-	// MOSI is tied to MISO so we can feed bytes we want to see
-	IN_DATA  = inData;
-//	OUT_DATA = sofPacket;
 
+	IN_DATA  = inData;
 	STATE(stateIdle);
 }
 
@@ -255,12 +244,14 @@ void leptonStateMachine(void)
 		break;
 
 	case stateDelayFourFrames:
-		usleep(4*USECONDS_PER_FRAME);
+		printf("stateDelayFourFrames\r\n");
+//		usleep(4*USECONDS_PER_FRAME);
 		STATE(stateFindIDFirst);
 		break;
 
 	// Look for XF in first byte
 	case stateFindIDFirst:
+		printf("stateFindIDFirst\r\n");
 		IDX = 0;
 		readSpiBytes(1);
 		if ((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0x0F) {
@@ -273,6 +264,7 @@ void leptonStateMachine(void)
 
 	// Look for FX in second byte
 	case stateFindIDSecond:
+		printf("stateFindIDSecond\r\n");
 		readSpiBytes(1);
 		if ((IN_DATA[ID_BYTE_POSITION+1] & 0xF0) == 0xF0) {
 			STATE(stateGetRemaining);
@@ -284,12 +276,14 @@ void leptonStateMachine(void)
 
 	// Read the rest of the packet
 	case stateGetRemaining:
+		printf("stateGetRemaining\r\n");
 		readSpiBytes(VOSPI_PACKET_SIZE-2);
 		STATE(stateReadPacket);
 		break;
 
 	// Read next packet
 	case stateReadPacket:
+		printf("stateReadPacket\r\n");
 		IDX = 0;
 		readSpiBytes(VOSPI_PACKET_SIZE);
 
@@ -318,6 +312,7 @@ void leptonStateMachine(void)
 	{
 		u16 calcCRC, packetCRC;
 
+		printf("stateCheckCRC\r\n");
 		packetCRC = (u16) IN_DATA[CRC_BYTE_POSITION] << 8;
 		packetCRC = packetCRC + (u16) IN_DATA[CRC_BYTE_POSITION + 1];
 
@@ -334,7 +329,7 @@ void leptonStateMachine(void)
 			memcpy(&FB[LINE*H_LINE_BYTES], &IN_DATA[VOSPI_HEADER_BYTES], H_LINE_BYTES);
 			LINE = LINE + 1;
 //			if (LINE == V_LINES) {	// TODO: switch back once we have a real camera
-			if (LINE == 2) {
+			if (LINE == 5) {
 				STATE(stateDelayBetweenFrames);
 			}
 			else {
@@ -345,12 +340,14 @@ void leptonStateMachine(void)
 		break;
 
 	case stateReadLineOfVideo:
+		printf("stateReadLineOfVideo\r\n");
 		IDX = 0;
 		readSpiBytes(VOSPI_PACKET_SIZE);
 		STATE(stateCheckCRC);
 		break;
 
 	case stateDelayBetweenFrames:
+		printf("stateDelayBetweenFrames\r\n");
 		// TODO: Let someone know we have a frame
 		usleep(USECONDS_PER_FRAME); // TODO: Really?
 		STATE(stateReadPacket);
@@ -374,7 +371,7 @@ void leptonStateMachine(void)
 ///////////////////////////////////
 
 static bool m_stateInit(void){
-    int mode       = spiMODE_POL1_PHASE1;
+    int mode = spiMODE_POL1_PHASE1;
     u08 i, slave_resp[SLAVE_RESP_SIZE];
 
 	leptonData.port = aadetect();
@@ -446,36 +443,23 @@ static void buildStream(void)
 	u08 discardPacketBytes[VOSPI_PACKET_SIZE];
 	u08 line0PacketBytes[VOSPI_PACKET_SIZE];
 	u08 line59PacketBytes[VOSPI_PACKET_SIZE];
-	u08 randomBytes[4] = {0xf1, 0xfe, 0, 9};
+	u08 randomBytes[4] = {0xff, 0xfe, 0, 9};
+//	u08 randomBytes[4] = {0x00, 0x00, 0, 9};
 
 	words2bytes(line0Packet, line0PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(line59Packet, line59PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(discardPacket, discardPacketBytes, VOSPI_PACKET_SIZE/2);
 
 	// Build the emulation stream
-	memcpy(&emulationStream[(0*VOSPI_PACKET_SIZE)], randomBytes, 4);
+	memcpy(&emulationStream[0], randomBytes, 4);
 	memcpy(&emulationStream[(0*VOSPI_PACKET_SIZE)+4], discardPacketBytes, VOSPI_PACKET_SIZE);
 	memcpy(&emulationStream[(1*VOSPI_PACKET_SIZE)+4], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(2*VOSPI_PACKET_SIZE)+4], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(3*VOSPI_PACKET_SIZE)+4], line59PacketBytes, VOSPI_PACKET_SIZE);
-	printf("done\r\n");
+	memcpy(&emulationStream[(2*VOSPI_PACKET_SIZE)+4], discardPacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(3*VOSPI_PACKET_SIZE)+4], discardPacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(4*VOSPI_PACKET_SIZE)+4], line0PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(5*VOSPI_PACKET_SIZE)+4], line59PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(6*VOSPI_PACKET_SIZE)+4], line0PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(7*VOSPI_PACKET_SIZE)+4], line59PacketBytes, VOSPI_PACKET_SIZE);
+	printf("done\r\n");	printf("done\r\n");
 }
 
-// Debug function to make sure CRC-16 is working.
-// Packets are calc'd w/ CRC and T fields set to zero.
-static void calcCrc(void)
-{
-	u08 localPacket[VOSPI_PACKET_SIZE];
-	u16 crc;
-
-	// Convert words to bytes
-	words2bytes(line0Packet, localPacket, VOSPI_PACKET_SIZE/2);
-
-	//Zero out bytes
-	localPacket[0] = 0;		// T
-	localPacket[2] = 0;		// CRC16 MSB
-	localPacket[3] = 0;		// CRC16 LSB
-
-	crc = fast_crc16(0x0, localPacket, VOSPI_PACKET_SIZE);
-	printf("crc = 0x%x\r\n", crc);
-}

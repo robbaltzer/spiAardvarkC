@@ -47,7 +47,6 @@ int main (int argc, char *argv[])
 
 	while(1) {
 		leptonStateMachine();
-		usleep(250);
 	}
 
 #else
