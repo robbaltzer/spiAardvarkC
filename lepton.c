@@ -203,7 +203,7 @@ static u16 discardPacket[VOSPI_PACKET_SIZE/2] =
 
 // Five packets with 4 random bytes prepended used to emulate
 // a "real world" byte stream coming from a Lepton
-static u08 emulationStream[(VOSPI_PACKET_SIZE*20) + 4];
+static u08 emulationStream[(VOSPI_PACKET_SIZE*120) + 4];
 
 LeptonData leptonData;
 
@@ -322,6 +322,7 @@ void leptonStateMachine(void)
 		IN_DATA[3] = 0;		// CRC16 LSB
 
 		calcCRC = fast_crc16(0x0, IN_DATA, VOSPI_PACKET_SIZE);
+		printf("calcCRC 0x%x packetCRC 0x%x\r\n",calcCRC, packetCRC);
 		if (packetCRC != calcCRC) {
 			STATE(stateDelayFourFrames);
 		}
@@ -417,9 +418,15 @@ static bool m_stateInit(void){
 // Read NumBytes bytes via SPI
 static void readSpiBytes(u08 NumBytes)
 {
-    aa_spi_write(leptonData.handle, NumBytes, &OUT_DATA[ODX], NumBytes, &IN_DATA[IDX]);
-    IDX += NumBytes;
-    ODX += NumBytes;
+    u16 i;
+
+	aa_spi_write(leptonData.handle, NumBytes, &OUT_DATA[ODX], NumBytes, &IN_DATA[IDX]);
+    for (i = 0 ; i < NumBytes ; i++) {
+    	printf("NumBytes: %d IDX: %d IN_DATA[IDX]: 0x%x\r\n", NumBytes, IDX, IN_DATA[i]);
+    }
+    IDX = IDX + NumBytes;
+    ODX = ODX + NumBytes;
+
 }
 
 
@@ -438,28 +445,51 @@ static void words2bytes(u16* words, u08* bytes, u16 numWords)
 	}
 }
 
+#define NUM_RANDOM_BYTES	(10)
+#define NUM_DISCARD_PACKETS (1)
+#define NUM_VIDEO_PACKETS	(60)
 static void buildStream(void)
 {
 	u08 discardPacketBytes[VOSPI_PACKET_SIZE];
 	u08 line0PacketBytes[VOSPI_PACKET_SIZE];
 	u08 line59PacketBytes[VOSPI_PACKET_SIZE];
-	u08 randomBytes[4] = {0xff, 0xfe, 0, 9};
-//	u08 randomBytes[4] = {0x00, 0x00, 0, 9};
+	u08 randomBytes[NUM_RANDOM_BYTES] = {0, 0, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5};
+	u08 i, j = 0;
+
 
 	words2bytes(line0Packet, line0PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(line59Packet, line59PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(discardPacket, discardPacketBytes, VOSPI_PACKET_SIZE/2);
 
+	memset(&emulationStream[0], 0xaf, (VOSPI_PACKET_SIZE*120));
+
 	// Build the emulation stream
-	memcpy(&emulationStream[0], randomBytes, 4);
-	memcpy(&emulationStream[(0*VOSPI_PACKET_SIZE)+4], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(1*VOSPI_PACKET_SIZE)+4], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(2*VOSPI_PACKET_SIZE)+4], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(3*VOSPI_PACKET_SIZE)+4], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(4*VOSPI_PACKET_SIZE)+4], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(5*VOSPI_PACKET_SIZE)+4], line59PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(6*VOSPI_PACKET_SIZE)+4], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(7*VOSPI_PACKET_SIZE)+4], line59PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[0], randomBytes, NUM_RANDOM_BYTES);
+	memcpy(&emulationStream[(1*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(2*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(3*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(4*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(5*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(6*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(7*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(8*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(9*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+
+/*
+	//	for (i = 0 ; i < NUM_DISCARD_PACKETS ; i++) {
+//		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+//	}
+
+
+	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+//	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+//	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+//	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(7*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+*/
 	printf("done\r\n");	printf("done\r\n");
 }
 
