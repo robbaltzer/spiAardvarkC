@@ -162,14 +162,13 @@ typedef struct {
 	u16 crc;
 	u16 payloadBytes;
 	HeaderType headerType;
-
 	u16 inIndex;
 	u16 outIndex;
 	u08* bytesOut;	// Note: This is used primarily as a debug tool w/ MOSI & MISO tied together the data loops back.
 
-	u08 frameBuffer[H_PIXELS*V_LINES];
+	u08 frameBuffer[H_PIXELS*V_LINES*2];	// 2 bytes per pixel
 	u16 frameBufferIndex;
-	u08 line;
+	u16 line;
 }LeptonData;
 
 static u08 inData[VOSPI_PACKET_SIZE];
@@ -214,6 +213,9 @@ void leptonInit(void)
 	STATE(stateIdle);
 }
 
+static u16 videoPackets = 0;
+static u16 discardPackets = 0;
+
 void leptonStart(void)
 {
 	// Build emulation stream that gets looped back MOSI->MISO
@@ -222,7 +224,7 @@ void leptonStart(void)
 
 	STATE(stateInit);
 	ODX = 0;
-	printf("leptonStart\r\n");
+//	printf("leptonStart\r\n");
 }
 
 // The state machine starts by trying to identify a SOF packet and syncing to it
@@ -244,62 +246,80 @@ void leptonStateMachine(void)
 		break;
 
 	case stateDelayFourFrames:
-		printf("stateDelayFourFrames\r\n");
+//		printf("stateDelayFourFrames\r\n");
 //		usleep(4*USECONDS_PER_FRAME);
 		STATE(stateFindIDFirst);
 		break;
 
 	// Look for XF in first byte
 	case stateFindIDFirst:
-		printf("stateFindIDFirst\r\n");
+//		printf("stateFindIDFirst\r\n");
 		IDX = 0;
 		readSpiBytes(1);
+		printf("IN_DATA[ID_BYTE_POSITION] = 0x%x\r\n", IN_DATA[ID_BYTE_POSITION]);
+
+		// DEBUG: have we overrun the emuation buffer
+		if (IN_DATA[ID_BYTE_POSITION] == 0xaf) {
+			STATE(stateError);
+			return;
+		}
 		if ((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0x0F) {
 			STATE(stateFindIDSecond);
 		}
 		else {
 			STATE(stateDelayFourFrames);
+			printf("IGNORED 1 BYTE\r\n");
 		}
 		break;
 
 	// Look for FX in second byte
 	case stateFindIDSecond:
-		printf("stateFindIDSecond\r\n");
+//		printf("stateFindIDSecond\r\n");
 		readSpiBytes(1);
+		printf("IN_DATA[ID_BYTE_POSITION+1] = 0x%x\r\n", IN_DATA[ID_BYTE_POSITION+1]);
 		if ((IN_DATA[ID_BYTE_POSITION+1] & 0xF0) == 0xF0) {
 			STATE(stateGetRemaining);
 		}
 		else {
 			STATE(stateDelayFourFrames);
+			printf("IGNORED 2 BYTES\r\n");
 		}
 		break;
 
-	// Read the rest of the packet
+	// Read the rest of the discard packet
 	case stateGetRemaining:
-		printf("stateGetRemaining\r\n");
+//		printf("stateGetRemaining\r\n");
+		discardPackets++;
+		printf("FOUND xFFx WORD, READING IN 162 BYTES OF DISCARD PACKET %d\r\n", discardPackets);
 		readSpiBytes(VOSPI_PACKET_SIZE-2);
+		LINE = 0;
 		STATE(stateReadPacket);
 		break;
 
 	// Read next packet
 	case stateReadPacket:
-		printf("stateReadPacket\r\n");
+//		printf("stateReadPacket\r\n");
 		IDX = 0;
 		readSpiBytes(VOSPI_PACKET_SIZE);
 
 		// Check if ID field looks like video packet on HLine 0
 		if (((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0) &&
-				((IN_DATA[ID_BYTE_POSITION+1]) == 0)) {
-			LINE = 0;
+				((IN_DATA[ID_BYTE_POSITION+1]) < 60)) {	// TODO: ADD CHECK FOR LINE
+
 			STATE(stateCheckCRC);
+
+			printf("FOUND VIDEO PACKET HEADER\r\n");
 		}
 
 		// Check if ID field looks like discard packet
 		else if (((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0x0F) &&
 				((IN_DATA[ID_BYTE_POSITION+1] & 0xF0) == 0xF0)) {
+			discardPackets++;
+			printf("FOUND DISCARD PACKET HEADER %d\r\n", discardPackets);
 			// Keep reading packets
 		}
 		else {
+			printf("NOT A VIDEO OR DISCARD PACKET - IGNORING PACKET - STARTING OVER\r\n");
 			STATE(stateDelayFourFrames);
 		}
 
@@ -312,7 +332,7 @@ void leptonStateMachine(void)
 	{
 		u16 calcCRC, packetCRC;
 
-		printf("stateCheckCRC\r\n");
+//		printf("stateCheckCRC\r\n");
 		packetCRC = (u16) IN_DATA[CRC_BYTE_POSITION] << 8;
 		packetCRC = packetCRC + (u16) IN_DATA[CRC_BYTE_POSITION + 1];
 
@@ -322,18 +342,22 @@ void leptonStateMachine(void)
 		IN_DATA[3] = 0;		// CRC16 LSB
 
 		calcCRC = fast_crc16(0x0, IN_DATA, VOSPI_PACKET_SIZE);
-		printf("calcCRC 0x%x packetCRC 0x%x\r\n",calcCRC, packetCRC);
 		if (packetCRC != calcCRC) {
+			printf("VIDEO PACKET CRC DIDN'T MATCH\r\n");
+			printf("calcCRC 0x%x packetCRC 0x%x\r\n",calcCRC, packetCRC);
 			STATE(stateDelayFourFrames);
 		}
 		else {
 			memcpy(&FB[LINE*H_LINE_BYTES], &IN_DATA[VOSPI_HEADER_BYTES], H_LINE_BYTES);
 			LINE = LINE + 1;
-//			if (LINE == V_LINES) {	// TODO: switch back once we have a real camera
-			if (LINE == 5) {
+			if (LINE == V_LINES) {	// TODO: switch back once we have a real camera
+//			if (LINE == 2) {
+				printf("FOUND ENTIRE FRAME\r\n");
 				STATE(stateDelayBetweenFrames);
 			}
 			else {
+				videoPackets++;
+				printf("VIDEO PACKET CRC MATCHED: 0x%x #: %d LINE:%d\r\n", calcCRC, videoPackets, LINE);
 				STATE(stateReadLineOfVideo);
 			}
 		}
@@ -341,14 +365,15 @@ void leptonStateMachine(void)
 		break;
 
 	case stateReadLineOfVideo:
-		printf("stateReadLineOfVideo\r\n");
+//		printf("stateReadLineOfVideo\r\n");
 		IDX = 0;
 		readSpiBytes(VOSPI_PACKET_SIZE);
+		printf("READING VIDEO PACKET\r\n");
 		STATE(stateCheckCRC);
 		break;
 
 	case stateDelayBetweenFrames:
-		printf("stateDelayBetweenFrames\r\n");
+//		printf("stateDelayBetweenFrames\r\n");
 		// TODO: Let someone know we have a frame
 		usleep(USECONDS_PER_FRAME); // TODO: Really?
 		STATE(stateReadPacket);
@@ -357,7 +382,8 @@ void leptonStateMachine(void)
 		break;
 
 	case stateError:
-		printf("LeptonStateMachine: Ended in ERROR");
+		printf("LeptonStateMachine: Ended in ERROR\r\n");
+		exit(0);
 		STATE(stateIdle);
 		break;
 
@@ -421,12 +447,13 @@ static void readSpiBytes(u08 NumBytes)
     u16 i;
 
 	aa_spi_write(leptonData.handle, NumBytes, &OUT_DATA[ODX], NumBytes, &IN_DATA[IDX]);
-    for (i = 0 ; i < NumBytes ; i++) {
+#if 0
+	for (i = 0 ; i < NumBytes ; i++) {
     	printf("NumBytes: %d IDX: %d IN_DATA[IDX]: 0x%x\r\n", NumBytes, IDX, IN_DATA[i]);
     }
+#endif
     IDX = IDX + NumBytes;
     ODX = ODX + NumBytes;
-
 }
 
 
@@ -445,51 +472,52 @@ static void words2bytes(u16* words, u08* bytes, u16 numWords)
 	}
 }
 
+//#define NUM_RANDOM_BYTES	(0)
 #define NUM_RANDOM_BYTES	(10)
-#define NUM_DISCARD_PACKETS (1)
+#define NUM_DISCARD_PACKETS (20)
 #define NUM_VIDEO_PACKETS	(60)
 static void buildStream(void)
 {
 	u08 discardPacketBytes[VOSPI_PACKET_SIZE];
 	u08 line0PacketBytes[VOSPI_PACKET_SIZE];
 	u08 line59PacketBytes[VOSPI_PACKET_SIZE];
-	u08 randomBytes[NUM_RANDOM_BYTES] = {0, 0, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5};
-	u08 i, j = 0;
-
+	u08 randomBytes[NUM_RANDOM_BYTES] = {0x00, 0x00, 0x00, 0x00, 0xa5, 0xa5, 0xa5, 0xa5, 0x0f, 0x00};
+	u08 i,j = 0;
 
 	words2bytes(line0Packet, line0PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(line59Packet, line59PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(discardPacket, discardPacketBytes, VOSPI_PACKET_SIZE/2);
 
 	memset(&emulationStream[0], 0xaf, (VOSPI_PACKET_SIZE*120));
-
+#if 0
 	// Build the emulation stream
 	memcpy(&emulationStream[0], randomBytes, NUM_RANDOM_BYTES);
+	memcpy(&emulationStream[(0*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
 	memcpy(&emulationStream[(1*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
 	memcpy(&emulationStream[(2*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
 	memcpy(&emulationStream[(3*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(4*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(4*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
 	memcpy(&emulationStream[(5*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(6*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(6*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
 	memcpy(&emulationStream[(7*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(8*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(9*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+	memcpy(&emulationStream[(8*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
+#else
+	memcpy(&emulationStream[0], randomBytes, NUM_RANDOM_BYTES);
 
-/*
-	//	for (i = 0 ; i < NUM_DISCARD_PACKETS ; i++) {
+	for (i = 0 ; i < NUM_DISCARD_PACKETS ; i++) {
+		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
+	}
+
+	for (i = 0 ; i < NUM_VIDEO_PACKETS ; i++) {
+		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+	}
+//	for (i = 0 ; i < NUM_DISCARD_PACKETS ; i++) {
 //		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
 //	}
-
-
-	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-//	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-//	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-//	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(7*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
-*/
+//	for (i = 0 ; i < NUM_VIDEO_PACKETS ; i++) {
+//		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
+//	}
+	#endif
 	printf("done\r\n");	printf("done\r\n");
 }
 
