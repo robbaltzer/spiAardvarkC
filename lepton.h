@@ -39,4 +39,5 @@ typedef enum {
 void leptonStateMachine(void);
 void leptonInit(void);
 void leptonStart(void);
+bool spiInit(void);
 #endif

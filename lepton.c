@@ -56,6 +56,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "aardvark.h"
 #include "main.h"
@@ -100,7 +101,6 @@ enum {
 } SpiMode;
 
 static void readSpiBytes(u08 NumBytes);
-static bool m_stateInit(void);
 static void words2bytes(u16* words, u08* bytes, u16 numWords);
 static void buildStream(void);
 
@@ -159,6 +159,7 @@ static u16 discardPackets = 0;
 void leptonInit(void)
 {
 	IN_DATA  = inData;
+
 	STATE(stateIdle);
 }
 
@@ -182,16 +183,15 @@ void leptonStateMachine(void)
 		break;
 
 	case stateInit:
-		if (m_stateInit()) {
+//		if (m_stateInit()) {
 			STATE(stateFindIDFirst);
-		}
-		else {
-			STATE(stateError);
-		}
+//		}
+//		else {
+//			STATE(stateError);
+//		}
 		break;
 
 	case stateDelayFourFrames:
-//		printf("stateDelayFourFrames\r\n");
 //		usleep(4*USECONDS_PER_FRAME);
 		STATE(stateFindIDFirst);
 		break;
@@ -309,12 +309,12 @@ void leptonStateMachine(void)
 		usleep(USECONDS_PER_FRAME); // TODO: Really?
 		STATE(stateReadPacket);
 		printf("Frame RX'd lines %d \r\n", LINE);
-		exit(0);
+		pthread_exit(0);
 		break;
 
 	case stateError:
 		printf("LeptonStateMachine: Ended in ERROR\r\n");
-		exit(0);
+		pthread_exit(0);
 		STATE(stateIdle);
 		break;
 
@@ -327,8 +327,9 @@ void leptonStateMachine(void)
 ///////////////////////////////////
 // State Machine Functions
 ///////////////////////////////////
-
-static bool m_stateInit(void){
+// NOTE: This function must be called on the main thread
+bool spiInit(void)
+{
     int mode = spiMODE_POL1_PHASE1;
     u08 i, slave_resp[SLAVE_RESP_SIZE];
 
@@ -375,7 +376,7 @@ static bool m_stateInit(void){
 // Read NumBytes bytes via SPI
 static void readSpiBytes(u08 NumBytes)
 {
-    u16 i;
+//    u16 i;
 
 	aa_spi_write(leptonData.handle, NumBytes, &OUT_DATA[ODX], NumBytes, &IN_DATA[IDX]);
 #if 0

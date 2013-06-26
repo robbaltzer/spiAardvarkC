@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "aardvark.h"
 #include "main.h"
@@ -35,28 +36,42 @@
 s16 port;
 
 static void dump (Aardvark handle, int timeout_ms);
+void lepton_thread(void);
+
 
 int main (int argc, char *argv[])
 {
 
 #if 1
-	printf("Hello\r\n");
 
+	if (!spiInit()) {
+		printf("SPI didn't init\r\n");
+		return 0;
+	}
+
+	pthread_t f1_thread;
+	int i1;
+	i1 = 1;
+	pthread_create(&f1_thread, NULL, (void*) &lepton_thread, &i1);
+	pthread_join(f1_thread, NULL );
+#else
+	lepton_thread();
+#endif
+    return 0;
+}
+
+void lepton_thread(void)
+{
+
+//	printf("THREAD\r\n");
 	leptonInit();
 	leptonStart();
+
 
 	while(1) {
 		leptonStateMachine();
 	}
-
-#else
-	port = aadetect();
-	if (port != -1) {
-		readReadSPI(port);
-	}
-#endif
-
-    return 0;
+//	pthread_exit(0);
 }
 
 s16 aadetect(void)
