@@ -245,10 +245,8 @@ void leptonStateMachine(void)
 
 		// Check if ID field looks like video packet on HLine 0
 		if (((IN_DATA[ID_BYTE_POSITION] & 0x0F) == 0) &&
-				((IN_DATA[ID_BYTE_POSITION+1]) < 60)) {	// TODO: ADD CHECK FOR LINE
-
+				((IN_DATA[ID_BYTE_POSITION+1]) == LINE)) {
 			STATE(stateCheckCRC);
-
 			printf("FOUND VIDEO PACKET HEADER\r\n");
 		}
 
@@ -260,7 +258,7 @@ void leptonStateMachine(void)
 			// Keep reading packets
 		}
 		else {
-			printf("NOT A VIDEO OR DISCARD PACKET - IGNORING PACKET - STARTING OVER\r\n");
+			printf("NOT A VIDEO OR DISCARD PACKET (OR OUT OF ORDER) - IGNORING PACKET - STARTING OVER\r\n");
 			STATE(stateDelayFourFrames);
 		}
 		break;
