@@ -18,81 +18,6 @@
  *  Created on: Jun 6, 2013
  *      Author: rbaltzer
  */
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-
-#include "aardvark.h"
-#include "main.h"
-#include "lepton.h"
-#include "crc.h"
-
-
-#define BUFFER_SIZE      	(65535)
-#define SLAVE_RESP_SIZE     (26)
-
-
-#define VOSPI_PACKET_SIZE  	(164)
-#define VOSPI_HEADER_BYTES	(4)
-#define H_LINE_BYTES		(VOSPI_PACKET_SIZE - VOSPI_HEADER_BYTES) // 80 pixels per line, 2 bytes each = 160
-#define MAX_PAYLOAD_SIZE	(164)
-
-#define FRAMES_PER_SECOND   (9)
-#define USECONDS_PER_FRAME	(1000000/FRAMES_PER_SECOND)
-
-#define H_PIXELS			(80)
-#define V_LINES				(60)
-
-#define STATE(x) 			leptonData.state=x
-#define IN_DATA				leptonData.bytesIn
-#define OUT_DATA			leptonData.bytesOut
-#define IDX					leptonData.inIndex
-#define ODX					leptonData.outIndex
-#define FB					leptonData.frameBuffer
-#define FBX					leptonData.frameBufferIndex
-#define LINE				leptonData.line
-
-//
-// VoSPI IDs (0xFF00 - 0xFFFF)
-//
-// 		0xFFFF - Start of Frame (SOF)
-//		0xFFFE - End of Frame (EOF)
-//		0xFFFD - Alternate stream
-//		0xFFFC - Discard packet
-//		0xFFF8 - 0xFFFB - Pallette Header Packet
-//		0xFF00 - 0xFFF7 Reserved
-
-// VoSPI Packet IDs
-typedef enum {
-	idPallette 			= 0xFFF8, // Thru 0xFFFB?
-	idDiscard 			= 0xFFFC,
-	idAlternateStream 	= 0xFFFD,
-	idEOF 				= 0xFFFE,
-	idSOF 				= 0xFFFF,
-} VoSpiPacketId;
-
-#define ID_BYTE_POSITION	(0)
-#define CRC_BYTE_POSITION	(2)
-
-enum {
-	sofID 				= 0,
-	sofCRC 				= 2,
-	sofNumPayloadBytes 	= 4,
-	sofHeaderType	 	= 6,
-	sofPixelFormat	 	= 7,
-} SofBytePosition;
-
-
-
-enum {
-    spiMODE_POL0_PHASE0 = 0,
-    spiMODE_POL0_PHASE1 = 1,
-    spiMODE_POL1_PHASE0 = 2,
-    spiMODE_POL1_PHASE1 = 3,
-} SpiMode;
-
 /*
  * VoSPI Physical Implementation
  *
@@ -127,32 +52,57 @@ enum {
 //  5. Deal with timing and go to step 2.
 //
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "aardvark.h"
+#include "main.h"
+#include "lepton.h"
+#include "crc.h"
+
+
+#define BUFFER_SIZE      	(65535)
+#define SLAVE_RESP_SIZE     (26)
+
+
+#define VOSPI_PACKET_SIZE  	(164)
+#define VOSPI_HEADER_BYTES	(4)
+#define H_LINE_BYTES		(VOSPI_PACKET_SIZE - VOSPI_HEADER_BYTES) // 80 pixels per line, 2 bytes each = 160
+#define MAX_PAYLOAD_SIZE	(164)
+
+#define FRAMES_PER_SECOND   (9)
+#define USECONDS_PER_FRAME	(1000000/FRAMES_PER_SECOND)
+
+#define H_PIXELS			(80)
+#define V_LINES				(60)
+
+#define UNINITIALIZED		(0xaf)
+
+#define STATE(x) 			leptonData.state=x
+#define IN_DATA				leptonData.bytesIn
+#define OUT_DATA			leptonData.bytesOut
+#define IDX					leptonData.inIndex
+#define ODX					leptonData.outIndex
+#define FB					leptonData.frameBuffer
+#define FBX					leptonData.frameBufferIndex
+#define LINE				leptonData.line
+
+#define ID_BYTE_POSITION	(0)
+#define CRC_BYTE_POSITION	(2)
+
+enum {
+    spiMODE_POL0_PHASE0 = 0,
+    spiMODE_POL0_PHASE1 = 1,
+    spiMODE_POL1_PHASE0 = 2,
+    spiMODE_POL1_PHASE1 = 3,
+} SpiMode;
+
 static void readSpiBytes(u08 NumBytes);
 static bool m_stateInit(void);
 static void words2bytes(u16* words, u08* bytes, u16 numWords);
 static void buildStream(void);
-
-typedef enum {
-	hdrIgnore 	= 0,
-	hdrSOF	  	= 1,
-	hdrEOF    	= 2,
-	hdrPallet0  = 16,
-	hdrPallet1,
-	hdrPallet2,
-	hdrPallet3,
-	hdrPallet4,
-	hdrPallet5,
-	hdrPallet6,
-	hdrPallet7,
-	hdrPallet8,
-	hdrPallet9,
-	hdrPallet10,
-	hdrPallet11,
-	hdrPallet12,
-	hdrPallet13,
-	hdrPallet14,
-	hdrPallet15,
-}HeaderType;
 
 typedef struct {
 	s16 port;
@@ -161,7 +111,6 @@ typedef struct {
 	u08* bytesIn;	// TODO: Make sure pointed at buffer VOSPI_PACKET_SIZE
 	u16 crc;
 	u16 payloadBytes;
-	HeaderType headerType;
 	u16 inIndex;
 	u16 outIndex;
 	u08* bytesOut;	// Note: This is used primarily as a debug tool w/ MOSI & MISO tied together the data loops back.
@@ -202,19 +151,16 @@ static u16 discardPacket[VOSPI_PACKET_SIZE/2] =
 
 // Five packets with 4 random bytes prepended used to emulate
 // a "real world" byte stream coming from a Lepton
-static u08 emulationStream[(VOSPI_PACKET_SIZE*120) + 4];
-
-LeptonData leptonData;
+static u08 emulationStream[(VOSPI_PACKET_SIZE*512) + 4];
+static LeptonData leptonData;
+static u16 videoPackets = 0;
+static u16 discardPackets = 0;
 
 void leptonInit(void)
 {
-
 	IN_DATA  = inData;
 	STATE(stateIdle);
 }
-
-static u16 videoPackets = 0;
-static u16 discardPackets = 0;
 
 void leptonStart(void)
 {
@@ -224,7 +170,6 @@ void leptonStart(void)
 
 	STATE(stateInit);
 	ODX = 0;
-//	printf("leptonStart\r\n");
 }
 
 // The state machine starts by trying to identify a SOF packet and syncing to it
@@ -253,13 +198,12 @@ void leptonStateMachine(void)
 
 	// Look for XF in first byte
 	case stateFindIDFirst:
-//		printf("stateFindIDFirst\r\n");
 		IDX = 0;
 		readSpiBytes(1);
 		printf("IN_DATA[ID_BYTE_POSITION] = 0x%x\r\n", IN_DATA[ID_BYTE_POSITION]);
 
 		// DEBUG: have we overrun the emuation buffer
-		if (IN_DATA[ID_BYTE_POSITION] == 0xaf) {
+		if (IN_DATA[ID_BYTE_POSITION] == UNINITIALIZED) {
 			STATE(stateError);
 			return;
 		}
@@ -274,7 +218,6 @@ void leptonStateMachine(void)
 
 	// Look for FX in second byte
 	case stateFindIDSecond:
-//		printf("stateFindIDSecond\r\n");
 		readSpiBytes(1);
 		printf("IN_DATA[ID_BYTE_POSITION+1] = 0x%x\r\n", IN_DATA[ID_BYTE_POSITION+1]);
 		if ((IN_DATA[ID_BYTE_POSITION+1] & 0xF0) == 0xF0) {
@@ -288,7 +231,6 @@ void leptonStateMachine(void)
 
 	// Read the rest of the discard packet
 	case stateGetRemaining:
-//		printf("stateGetRemaining\r\n");
 		discardPackets++;
 		printf("FOUND xFFx WORD, READING IN 162 BYTES OF DISCARD PACKET %d\r\n", discardPackets);
 		readSpiBytes(VOSPI_PACKET_SIZE-2);
@@ -298,7 +240,6 @@ void leptonStateMachine(void)
 
 	// Read next packet
 	case stateReadPacket:
-//		printf("stateReadPacket\r\n");
 		IDX = 0;
 		readSpiBytes(VOSPI_PACKET_SIZE);
 
@@ -322,17 +263,12 @@ void leptonStateMachine(void)
 			printf("NOT A VIDEO OR DISCARD PACKET - IGNORING PACKET - STARTING OVER\r\n");
 			STATE(stateDelayFourFrames);
 		}
-
-		// If Discard, read another packet,
-		// If video packet, check CRC, store first line and state = readvideopackets
-		// else goto stateDelayFourFrames
 		break;
 
 	case stateCheckCRC:
 	{
 		u16 calcCRC, packetCRC;
 
-//		printf("stateCheckCRC\r\n");
 		packetCRC = (u16) IN_DATA[CRC_BYTE_POSITION] << 8;
 		packetCRC = packetCRC + (u16) IN_DATA[CRC_BYTE_POSITION + 1];
 
@@ -350,8 +286,7 @@ void leptonStateMachine(void)
 		else {
 			memcpy(&FB[LINE*H_LINE_BYTES], &IN_DATA[VOSPI_HEADER_BYTES], H_LINE_BYTES);
 			LINE = LINE + 1;
-			if (LINE == V_LINES) {	// TODO: switch back once we have a real camera
-//			if (LINE == 2) {
+			if (LINE == V_LINES) {
 				printf("FOUND ENTIRE FRAME\r\n");
 				STATE(stateDelayBetweenFrames);
 			}
@@ -365,7 +300,6 @@ void leptonStateMachine(void)
 		break;
 
 	case stateReadLineOfVideo:
-//		printf("stateReadLineOfVideo\r\n");
 		IDX = 0;
 		readSpiBytes(VOSPI_PACKET_SIZE);
 		printf("READING VIDEO PACKET\r\n");
@@ -373,7 +307,6 @@ void leptonStateMachine(void)
 		break;
 
 	case stateDelayBetweenFrames:
-//		printf("stateDelayBetweenFrames\r\n");
 		// TODO: Let someone know we have a frame
 		usleep(USECONDS_PER_FRAME); // TODO: Really?
 		STATE(stateReadPacket);
@@ -456,11 +389,6 @@ static void readSpiBytes(u08 NumBytes)
     ODX = ODX + NumBytes;
 }
 
-
-void getVoSPIPacket(void) {
-	//Reads 164 bytes of data
-}
-
 // Big endian
 static void words2bytes(u16* words, u08* bytes, u16 numWords)
 {
@@ -472,7 +400,6 @@ static void words2bytes(u16* words, u08* bytes, u16 numWords)
 	}
 }
 
-//#define NUM_RANDOM_BYTES	(0)
 #define NUM_RANDOM_BYTES	(10)
 #define NUM_DISCARD_PACKETS (20)
 #define NUM_VIDEO_PACKETS	(60)
@@ -481,43 +408,32 @@ static void buildStream(void)
 	u08 discardPacketBytes[VOSPI_PACKET_SIZE];
 	u08 line0PacketBytes[VOSPI_PACKET_SIZE];
 	u08 line59PacketBytes[VOSPI_PACKET_SIZE];
-	u08 randomBytes[NUM_RANDOM_BYTES] = {0x00, 0x00, 0x00, 0x00, 0xa5, 0xa5, 0xa5, 0xa5, 0x0f, 0x00};
+	u08 packet[VOSPI_PACKET_SIZE];
+	u08 randomBytes[NUM_RANDOM_BYTES] = {0x0f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 	u08 i,j = 0;
+	u16 crc;
 
 	words2bytes(line0Packet, line0PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(line59Packet, line59PacketBytes, VOSPI_PACKET_SIZE/2);
 	words2bytes(discardPacket, discardPacketBytes, VOSPI_PACKET_SIZE/2);
 
-	memset(&emulationStream[0], 0xaf, (VOSPI_PACKET_SIZE*120));
-#if 0
-	// Build the emulation stream
-	memcpy(&emulationStream[0], randomBytes, NUM_RANDOM_BYTES);
-	memcpy(&emulationStream[(0*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(1*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(2*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(3*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(4*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(5*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(6*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(7*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-	memcpy(&emulationStream[(8*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-#else
+	memset(&emulationStream[0], UNINITIALIZED, (VOSPI_PACKET_SIZE*512));
 	memcpy(&emulationStream[0], randomBytes, NUM_RANDOM_BYTES);
 
 	for (i = 0 ; i < NUM_DISCARD_PACKETS ; i++) {
 		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
 	}
-
 	for (i = 0 ; i < NUM_VIDEO_PACKETS ; i++) {
-		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line59PacketBytes, VOSPI_PACKET_SIZE);
+		memcpy(packet, line0PacketBytes, VOSPI_PACKET_SIZE);
+		packet[0] = 0;		// TODO: Handle T
+		packet[1] = i;
+		packet[2] = 0;		// CRC16 MSB
+		packet[3] = 0;		// CRC16 LSB
+		crc = fast_crc16(0x0, packet, VOSPI_PACKET_SIZE);
+		packet[2] = (u08) (crc >> 8);
+		packet[3] = (u08) (crc & 0xff);
+		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], packet, VOSPI_PACKET_SIZE);
 	}
-//	for (i = 0 ; i < NUM_DISCARD_PACKETS ; i++) {
-//		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], discardPacketBytes, VOSPI_PACKET_SIZE);
-//	}
-//	for (i = 0 ; i < NUM_VIDEO_PACKETS ; i++) {
-//		memcpy(&emulationStream[(j++*VOSPI_PACKET_SIZE)+NUM_RANDOM_BYTES], line0PacketBytes, VOSPI_PACKET_SIZE);
-//	}
-	#endif
-	printf("done\r\n");	printf("done\r\n");
+	printf("done\r\n");
 }
 
