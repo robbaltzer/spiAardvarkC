@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/time.h>
 
 #include "aardvark.h"
 #include "main.h"
@@ -41,14 +42,11 @@ void lepton_thread(void);
 
 int main (int argc, char *argv[])
 {
-
-#if 1
-
 	if (!spiInit()) {
 		printf("SPI didn't init\r\n");
 		return 0;
 	}
-
+#if 1
 	pthread_t f1_thread;
 	int i1;
 	i1 = 1;
@@ -57,21 +55,17 @@ int main (int argc, char *argv[])
 #else
 	lepton_thread();
 #endif
-    return 0;
+	return 0;
 }
 
 void lepton_thread(void)
 {
-
-//	printf("THREAD\r\n");
 	leptonInit();
 	leptonStart();
-
 
 	while(1) {
 		leptonStateMachine();
 	}
-//	pthread_exit(0);
 }
 
 s16 aadetect(void)

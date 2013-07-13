@@ -24,7 +24,7 @@
 
 typedef enum {
 	stateIdle,
-	stateInit,
+	stateStart,
 	stateDelayFourFrames,
 	stateFindIDFirst,
 	stateFindIDSecond,

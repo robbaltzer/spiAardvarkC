@@ -57,6 +57,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "aardvark.h"
 #include "main.h"
@@ -100,9 +102,12 @@ enum {
     spiMODE_POL1_PHASE1 = 3,
 } SpiMode;
 
-static void readSpiBytes(u08 NumBytes);
+
+// Local Functions
+static void readSpiBytes(u16 NumBytes);
 static void words2bytes(u16* words, u08* bytes, u16 numWords);
 static void buildStream(void);
+static void dumpBytes(u08 NumBytes);
 
 typedef struct {
 	s16 port;
@@ -119,6 +124,9 @@ typedef struct {
 	u16 frameBufferIndex;
 	u16 line;
 }LeptonData;
+
+struct timeval t1, t2;
+double elapsedTime;
 
 static u08 inData[VOSPI_PACKET_SIZE];
 
@@ -149,6 +157,15 @@ static u16 discardPacket[VOSPI_PACKET_SIZE/2] =
 	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
 };
 
+static u16 nullPacket[VOSPI_PACKET_SIZE/2] =
+{
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000
+};
+
 // Five packets with 4 random bytes prepended used to emulate
 // a "real world" byte stream coming from a Lepton
 static u08 emulationStream[(VOSPI_PACKET_SIZE*512) + 4];
@@ -169,7 +186,7 @@ void leptonStart(void)
 	buildStream();
 	OUT_DATA = emulationStream;
 
-	STATE(stateInit);
+	STATE(stateStart);
 	ODX = 0;
 }
 
@@ -182,13 +199,8 @@ void leptonStateMachine(void)
 		// Do nothing
 		break;
 
-	case stateInit:
-//		if (m_stateInit()) {
-			STATE(stateFindIDFirst);
-//		}
-//		else {
-//			STATE(stateError);
-//		}
+	case stateStart:
+		STATE(stateFindIDFirst);
 		break;
 
 	case stateDelayFourFrames:
@@ -261,6 +273,7 @@ void leptonStateMachine(void)
 			printf("NOT A VIDEO OR DISCARD PACKET (OR OUT OF ORDER) - IGNORING PACKET - STARTING OVER\r\n");
 			STATE(stateDelayFourFrames);
 		}
+
 		break;
 
 	case stateCheckCRC:
@@ -299,16 +312,25 @@ void leptonStateMachine(void)
 
 	case stateReadLineOfVideo:
 		IDX = 0;
+		gettimeofday(&t1, NULL);
 		readSpiBytes(VOSPI_PACKET_SIZE);
-		printf("READING VIDEO PACKET\r\n");
+		gettimeofday(&t2, NULL);
+		elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
+		elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+		printf("READING VIDEO PACKET %f ms\r\n", elapsedTime);
 		STATE(stateCheckCRC);
 		break;
 
 	case stateDelayBetweenFrames:
+		// stop timer
+		usleep(10000);
+
+
 		// TODO: Let someone know we have a frame
-		usleep(USECONDS_PER_FRAME); // TODO: Really?
-		STATE(stateReadPacket);
+//		usleep(USECONDS_PER_FRAME); // TODO: Really?
+//		STATE(stateReadPacket);
 		printf("Frame RX'd lines %d \r\n", LINE);
+		printf("Elapsed time %f ms", elapsedTime);
 		pthread_exit(0);
 		break;
 
@@ -358,6 +380,8 @@ bool spiInit(void)
     // Setup the clock phase
     aa_spi_configure(leptonData.handle, mode >> 1, mode & 1, AA_SPI_BITORDER_MSB);
 
+    aa_spi_bitrate(leptonData.handle, 1000);
+
     // Set the slave response
     for (i=0; i<SLAVE_RESP_SIZE; ++i)
         slave_resp[i] = 'A' + i;
@@ -374,18 +398,39 @@ bool spiInit(void)
 ///////////////////////////////////
 
 // Read NumBytes bytes via SPI
-static void readSpiBytes(u08 NumBytes)
+static void readSpiBytes(u16 NumBytes)
 {
-//    u16 i;
+	aa_spi_write(leptonData.handle, NumBytes, (const u08 *) nullPacket, NumBytes, &IN_DATA[IDX]);
 
-	aa_spi_write(leptonData.handle, NumBytes, &OUT_DATA[ODX], NumBytes, &IN_DATA[IDX]);
-#if 0
-	for (i = 0 ; i < NumBytes ; i++) {
-    	printf("NumBytes: %d IDX: %d IN_DATA[IDX]: 0x%x\r\n", NumBytes, IDX, IN_DATA[i]);
-    }
-#endif
+	 dumpBytes(NumBytes);
+//#if 1
+//
+//	for (i = 0 ; i < NumBytes ; i++) {
+//		printf( "0x%02x ", IN_DATA[i]);
+//		if (((i+1)%21) == 0) {
+//			printf("\r\n");
+//		}
+////    	printf("NumBytes: %d IDX: %d IN_DATA[IDX]: 0x%x\r\n", NumBytes, IDX, IN_DATA[i]);
+//    }
+//	printf("\r\n\r\n");
+//#endif
+
     IDX = IDX + NumBytes;
     ODX = ODX + NumBytes;
+}
+
+static void dumpBytes(u08 NumBytes)
+{
+	u08 i;
+
+	for (i = 0 ; i < NumBytes ; i++) {
+		printf( "0x%02x ", IN_DATA[i]);
+		if (((i+1)%21) == 0) {
+			printf("\r\n");
+		}
+    }
+	printf("\r\n\r\n");
+
 }
 
 // Big endian
@@ -398,6 +443,7 @@ static void words2bytes(u16* words, u08* bytes, u16 numWords)
 		bytes[(i*2) + 1] = (u08) ((*words++) & 0xff);
 	}
 }
+
 
 #define NUM_RANDOM_BYTES	(10)
 #define NUM_DISCARD_PACKETS (20)
